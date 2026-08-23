@@ -1,0 +1,41 @@
+# Build .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+project.lock.json
+artifacts/
+
+# Tests et couverture
+coverage/
+TestResults/
+*.trx
+*.coverage
+*.opencover.xml
+
+# IDE
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# Secrets et environnement
+.env
+.env.*
+!.env.example
+appsettings.Development.local.json
+*.pfx
+secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Notes et specs personnelles
+.perso/
