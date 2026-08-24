@@ -8,18 +8,23 @@ public static class TaskEndpoints
 {
     public static void MapTaskEndpoints(this IEndpointRouteBuilder routes)
     {
-        var group = routes.MapGroup("/tasks");
+        var group = routes.MapGroup("/tasks").WithTags("Tasks");
 
         group.MapGet("/", async (AppDbContext db) =>
             Results.Ok(await db.Tasks.AsNoTracking()
                 .OrderByDescending(t => t.CreatedAt)
-                .ToListAsync()));
+                .ToListAsync()))
+            .WithName("ListTasks")
+            .Produces<List<TaskItem>>();
 
         group.MapGet("/{id:guid}", async (Guid id, AppDbContext db) =>
             await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id) is { } task
                 ? Results.Ok(task)
                 : Results.Problem(statusCode: StatusCodes.Status404NotFound,
-                    title: "Tache introuvable", detail: $"Aucune tache avec l'identifiant {id}."));
+                    title: "Tache introuvable", detail: $"Aucune tache avec l'identifiant {id}."))
+            .WithName("GetTask")
+            .Produces<TaskItem>()
+            .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapPost("/", async (CreateTaskRequest request, AppDbContext db) =>
         {
@@ -44,7 +49,10 @@ public static class TaskEndpoints
             await db.SaveChangesAsync();
 
             return Results.Created($"/tasks/{task.Id}", task);
-        });
+        })
+            .WithName("CreateTask")
+            .Produces<TaskItem>(StatusCodes.Status201Created)
+            .ProducesValidationProblem();
 
         group.MapPut("/{id:guid}", async (Guid id, UpdateTaskRequest request, AppDbContext db) =>
         {
@@ -70,7 +78,11 @@ public static class TaskEndpoints
             await db.SaveChangesAsync();
 
             return Results.Ok(task);
-        });
+        })
+            .WithName("UpdateTask")
+            .Produces<TaskItem>()
+            .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status404NotFound);
 
         group.MapDelete("/{id:guid}", async (Guid id, AppDbContext db) =>
         {
@@ -85,6 +97,9 @@ public static class TaskEndpoints
             await db.SaveChangesAsync();
 
             return Results.NoContent();
-        });
+        })
+            .WithName("DeleteTask")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblem(StatusCodes.Status404NotFound);
     }
 }

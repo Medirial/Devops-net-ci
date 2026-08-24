@@ -17,6 +17,8 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connect
 // (RFC 9457) au lieu de corps vides.
 builder.Services.AddProblemDetails();
 
+builder.Services.AddOpenApi();
+
 // Deux sondes distinctes, deux questions differentes :
 //   live  -- le process repond-il ? une reponse negative doit entrainer un redemarrage.
 //   ready -- peut-il servir du trafic ? la base est une dependance, pas le process.
@@ -31,6 +33,13 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
+}
+
+// Document expose hors production seulement : il decrit toute la surface de l'API,
+// c'est une carte offerte a qui cherche une faille.
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
 }
 
 app.UseExceptionHandler();
