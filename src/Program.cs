@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using TaskApi.Data;
 using TaskApi.Endpoints;
@@ -16,6 +17,13 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connect
 // (RFC 9457) au lieu de corps vides.
 builder.Services.AddProblemDetails();
 
+// Deux sondes distinctes, deux questions differentes :
+//   live  -- le process repond-il ? une reponse negative doit entrainer un redemarrage.
+//   ready -- peut-il servir du trafic ? la base est une dependance, pas le process.
+// Confondre les deux fait redemarrer l'application en boucle quand la base tombe.
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<AppDbContext>("postgres", tags: ["ready"]);
+
 var app = builder.Build();
 
 // Migration au demarrage : acceptable ici car un seul writer. Avec plusieurs replicas
@@ -27,6 +35,16 @@ using (var scope = app.Services.CreateScope())
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 app.MapTaskEndpoints();
 
