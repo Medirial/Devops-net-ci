@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TaskApi.Data;
+using TaskApi.Endpoints;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +12,10 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
+// Transforme les exceptions non gerees et les codes d'erreur en reponses ProblemDetails
+// (RFC 9457) au lieu de corps vides.
+builder.Services.AddProblemDetails();
+
 var app = builder.Build();
 
 // Migration au demarrage : acceptable ici car un seul writer. Avec plusieurs replicas
@@ -19,5 +24,10 @@ using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
 }
+
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+
+app.MapTaskEndpoints();
 
 app.Run();
