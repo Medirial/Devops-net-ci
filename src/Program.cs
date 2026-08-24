@@ -13,4 +13,11 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connect
 
 var app = builder.Build();
 
+// Migration au demarrage : acceptable ici car un seul writer. Avec plusieurs replicas
+// (phase 6), deux pods migreraient en concurrence -- a sortir dans un Job dedie.
+using (var scope = app.Services.CreateScope())
+{
+    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
+}
+
 app.Run();
