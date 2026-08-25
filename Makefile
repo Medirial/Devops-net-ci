@@ -15,7 +15,9 @@ run: ## Lance l'API en local (sans conteneur)
 
 .PHONY: test
 test: ## Lance les tests avec rapport de couverture
-	dotnet test --collect:"XPlat Code Coverage" --results-directory ./coverage
+	dotnet test --collect:"XPlat Code Coverage" \
+		--settings coverlet.runsettings \
+		--results-directory ./coverage
 
 .PHONY: lint
 lint: ## Vérifie les scripts avec shellcheck

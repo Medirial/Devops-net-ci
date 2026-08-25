@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <!-- opencover et non cobertura : c'est le seul format que le scanner SonarCloud
+               sait lire pour .NET (phase 5). -->
+          <Format>opencover</Format>
+
+          <!-- Migrations : code genere par la CLI EF, ni ecrit a la main ni modifiable.
+               Program.cs : racine de composition. La couvrir imposerait de demarrer un
+               hote HTTP, donc un test d'integration, hors perimetre de cette phase. -->
+          <ExcludeByFile>**/Migrations/*.cs,**/Program.cs</ExcludeByFile>
+
+          <!-- Les proprietes automatiques n'ont pas de corps : les compter gonflerait
+               le pourcentage sans qu'une seule ligne de logique soit testee. -->
+          <SkipAutoProps>true</SkipAutoProps>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
