@@ -1,0 +1,11 @@
+# Reference de comparaison uniquement -- ne pas utiliser en execution.
+# Image SDK complete : compilateurs, MSBuild, cache NuGet et sources restent dans
+# l'image finale. Sert a mesurer ce que le multi-stage fait gagner.
+FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine
+WORKDIR /source
+COPY src/ src/
+RUN dotnet publish src/TaskApi.csproj -c Release -o /app/publish
+WORKDIR /app/publish
+EXPOSE 8080
+ENV ASPNETCORE_HTTP_PORTS=8080
+ENTRYPOINT ["dotnet", "TaskApi.dll"]
