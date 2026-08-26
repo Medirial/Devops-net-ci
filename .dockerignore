@@ -1,0 +1,22 @@
+# Le contexte de build est envoye en entier au daemon avant la premiere instruction.
+# Sans ce fichier, bin/ obj/ et .git/ partent a chaque build.
+**/bin/
+**/obj/
+.git/
+.github/
+.perso/
+.vs/
+.vscode/
+.idea/
+tests/
+coverage/
+TestResults/
+*.user
+.env
+.env.*
+!.env.example
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+README.md
+Makefile
