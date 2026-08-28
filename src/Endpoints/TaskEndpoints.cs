@@ -1,5 +1,3 @@
-using Microsoft.EntityFrameworkCore;
-using TaskApi.Data;
 using TaskApi.Models;
 
 namespace TaskApi.Endpoints;
@@ -10,94 +8,27 @@ public static class TaskEndpoints
     {
         var group = routes.MapGroup("/tasks").WithTags("Tasks");
 
-        group.MapGet("/", async (AppDbContext db) =>
-            Results.Ok(await db.Tasks.AsNoTracking()
-                .OrderByDescending(t => t.CreatedAt)
-                .ToListAsync()))
+        group.MapGet("/", TaskHandlers.List)
             .WithName("ListTasks")
             .Produces<List<TaskItem>>();
 
-        group.MapGet("/{id:guid}", async (Guid id, AppDbContext db) =>
-            await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id) is { } task
-                ? Results.Ok(task)
-                : Results.Problem(statusCode: StatusCodes.Status404NotFound,
-                    title: "Tache introuvable", detail: $"Aucune tache avec l'identifiant {id}."))
+        group.MapGet("/{id:guid}", TaskHandlers.GetById)
             .WithName("GetTask")
             .Produces<TaskItem>()
             .ProducesProblem(StatusCodes.Status404NotFound);
 
-        group.MapPost("/", async (CreateTaskRequest request, AppDbContext db) =>
-        {
-            var errors = TaskRequestValidator.Validate(
-                request.Title, request.Description, status: null, titleRequired: true);
-
-            if (errors.Count > 0)
-            {
-                return Results.ValidationProblem(errors);
-            }
-
-            var task = new TaskItem
-            {
-                Id = Guid.NewGuid(),
-                Title = request.Title!.Trim(),
-                Description = request.Description?.Trim(),
-                Status = TaskItemStatus.Todo,
-                CreatedAt = DateTimeOffset.UtcNow
-            };
-
-            db.Tasks.Add(task);
-            await db.SaveChangesAsync();
-
-            return Results.Created($"/tasks/{task.Id}", task);
-        })
+        group.MapPost("/", TaskHandlers.Create)
             .WithName("CreateTask")
             .Produces<TaskItem>(StatusCodes.Status201Created)
             .ProducesValidationProblem();
 
-        group.MapPut("/{id:guid}", async (Guid id, UpdateTaskRequest request, AppDbContext db) =>
-        {
-            var errors = TaskRequestValidator.Validate(
-                request.Title, request.Description, request.Status, titleRequired: true);
-
-            if (errors.Count > 0)
-            {
-                return Results.ValidationProblem(errors);
-            }
-
-            var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id);
-            if (task is null)
-            {
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound,
-                    title: "Tache introuvable", detail: $"Aucune tache avec l'identifiant {id}.");
-            }
-
-            task.Title = request.Title!.Trim();
-            task.Description = request.Description?.Trim();
-            task.Status = request.Status ?? task.Status;
-
-            await db.SaveChangesAsync();
-
-            return Results.Ok(task);
-        })
+        group.MapPut("/{id:guid}", TaskHandlers.Update)
             .WithName("UpdateTask")
             .Produces<TaskItem>()
             .ProducesValidationProblem()
             .ProducesProblem(StatusCodes.Status404NotFound);
 
-        group.MapDelete("/{id:guid}", async (Guid id, AppDbContext db) =>
-        {
-            var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id);
-            if (task is null)
-            {
-                return Results.Problem(statusCode: StatusCodes.Status404NotFound,
-                    title: "Tache introuvable", detail: $"Aucune tache avec l'identifiant {id}.");
-            }
-
-            db.Tasks.Remove(task);
-            await db.SaveChangesAsync();
-
-            return Results.NoContent();
-        })
+        group.MapDelete("/{id:guid}", TaskHandlers.Delete)
             .WithName("DeleteTask")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblem(StatusCodes.Status404NotFound);

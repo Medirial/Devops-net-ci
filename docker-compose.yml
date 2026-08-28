@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taskapi}
+      POSTGRES_USER: ${POSTGRES_USER:-taskapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devonly}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      # pg_isready et non un simple test de port : postgres accepte les connexions
+      # plusieurs secondes avant d'etre pret a servir des requetes.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskapi} -d ${POSTGRES_DB:-taskapi}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ConnectionStrings__Postgres: Host=db;Port=5432;Database=${POSTGRES_DB:-taskapi};Username=${POSTGRES_USER:-taskapi};Password=${POSTGRES_PASSWORD:-devonly}
+    ports:
+      - "8080:8080"
+    networks: [backend]
+    depends_on:
+      db:
+        # service_started ne suffit pas : l'API applique ses migrations au demarrage
+        # et sort en erreur si la base n'accepte pas encore de connexion.
+        condition: service_healthy
+    # Le HEALTHCHECK est declare dans le Dockerfile : il suit l'image, il vaut donc
+    # aussi pour un docker run direct, pas seulement sous Compose.
+
+networks:
+  backend:
+
+volumes:
+  pgdata:
