@@ -36,6 +36,7 @@ build: ## Construit l'image Docker
 .PHONY: up
 up: ## Démarre la stack locale (API + PostgreSQL)
 	docker compose up -d --build
+	@./scripts/wait-for-healthy.sh -u http://localhost:8080/health/ready -t 120
 
 .PHONY: down
 down: ## Arrête la stack locale
@@ -44,6 +45,12 @@ down: ## Arrête la stack locale
 .PHONY: logs
 logs: ## Suit les logs de l'API
 	docker compose logs -f api
+
+.PHONY: size
+size: ## Compare la taille multi-stage / SDK unique
+	docker build -q -t $(IMAGE_NAME):$(IMAGE_TAG) . >/dev/null
+	docker build -q -f Dockerfile.single -t $(IMAGE_NAME):single . >/dev/null
+	@docker images --format '  {{.Repository}}:{{.Tag}}	{{.Size}}' | grep '^  $(IMAGE_NAME):'
 
 # --- Cibles ajoutées en phases 5 à 7 ---
 
