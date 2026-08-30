@@ -1,5 +1,7 @@
 # Task API
 
+[![CI](https://github.com/Medirial/Devops-net-ci/actions/workflows/ci.yml/badge.svg)](https://github.com/Medirial/Devops-net-ci/actions/workflows/ci.yml)
+
 API .NET conteneurisée, avec pipeline CI/CD et déploiement Kubernetes.
 
 ## Stack
@@ -43,3 +45,11 @@ tests/       tests unitaires
 k8s/         manifests Kubernetes
 scripts/     scripts de déploiement et diagnostic
 ```
+
+## Intégration continue
+
+Trois jobs enchaînés par `needs`, ordonnés par coût croissant : `lint` (ShellCheck) →
+`test` (build, tests, couverture) → `image` (build Docker, vérification non-root).
+
+Le rapport de couverture est publié en artefact à chaque exécution, y compris lorsque les
+tests échouent.
