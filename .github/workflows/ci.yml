@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# Deux pushs rapproches sur la meme branche : le premier run est annule. Sans ca, on
+# paie du runner pour valider un commit deja remplace.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Par defaut le GITHUB_TOKEN a les droits en ecriture sur le depot. On les retire :
+# aucun job de ce workflow n'ecrit quoi que ce soit.
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  # Le runner est detruit a la fin du job : la telemetrie et le message de premiere
+  # utilisation n'ont aucun interet et polluent les logs.
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  # Ordre par cout croissant : shellcheck prend quelques secondes, les tests une minute,
+  # le build d'image plusieurs. Echouer sur le moins cher d'abord evite de payer les
+  # etapes suivantes pour rien.
+  lint:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck est preinstalle sur les runners ubuntu-latest.
+      - name: Analyser les scripts
+        run: shellcheck --severity=style scripts/*.sh
+
+  test:
+    name: Build et tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # La cle contient un hash des .csproj : tant qu'aucune dependance ne change, le
+      # cache est reutilise. Une cle fixe ne serait jamais rafraichie ; une cle sur le
+      # SHA du commit ne serait jamais reutilisee.
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore
+
+      # --no-restore : le restore vient d'etre fait. Sans ce drapeau, build et test le
+      # relancent chacun, soit trois fois au total.
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Tests et couverture
+        run: |
+          dotnet test --configuration Release --no-build \
+            --collect:"XPlat Code Coverage" \
+            --settings coverlet.runsettings \
+            --results-directory ./coverage \
+            --logger "trx;LogFileName=tests.trx"
+
+      # Le runner est une VM jetable : sans upload, le rapport disparait avec elle.
+      # C'est aussi ce fichier que SonarCloud consommera en phase 5.
+      - name: Publier le rapport de couverture
+        # always() : un rapport n'a jamais autant d'interet que quand les tests echouent.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  image:
+    name: Build de l'image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      # Buildx active le cache de couches entre runs, que le builder par defaut ne sait
+      # pas faire : sans lui chaque run repart d'un restore NuGet complet dans l'image.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Construire l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Le push arrive en phase 5, avec le scan Trivy et le tag par SHA.
+          push: false
+          load: true
+          tags: taskapi:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verifier que le conteneur ne tourne pas en root
+        run: |
+          uid=$(docker run --rm --entrypoint id taskapi:${{ github.sha }} -u)
+          echo "uid dans le conteneur : $uid"
+          if [ "$uid" = "0" ]; then
+            echo "::error::le conteneur tourne en root" >&2
+            exit 1
+          fi
+
+      - name: Mesurer la taille de l'image
+        run: docker images taskapi:${{ github.sha }} --format '{{.Size}}'
