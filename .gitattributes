@@ -1,0 +1,26 @@
+# Normalise les fins de ligne. Sans ce fichier, core.autocrlf=true (defaut de Git for
+# Windows) laisse des CRLF dans la copie de travail : shellcheck echoue en SC1017, et un
+# script copie dans une image Linux meurt avec "bash\r: No such file or directory" -- le
+# noyau inclut le \r dans le chemin de l'interpreteur du shebang.
+#
+# .gitattributes est versionne, donc il s'applique a toute machine qui clone. Un
+# git config core.autocrlf=false ne protegerait que le poste ou il a ete pose.
+
+# LF dans le depot ET dans la copie de travail. Les binaires sont detectes et laisses
+# intacts par text=auto.
+* text=auto eol=lf
+
+# Fichiers ou le CRLF casse l'execution -- declares explicitement pour que l'intention
+# reste lisible meme si la regle globale change un jour.
+*.sh        text eol=lf
+Dockerfile* text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Makefile    text eol=lf
+
+# Binaires : jamais de conversion.
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.pfx  binary
+*.snk  binary
