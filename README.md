@@ -1,5 +1,7 @@
 # Task API
 
+[![CI](https://github.com/Medirial/Devops-net-ci/actions/workflows/ci.yml/badge.svg)](https://github.com/Medirial/Devops-net-ci/actions/workflows/ci.yml)
+
 API .NET conteneurisée, avec pipeline CI/CD et déploiement Kubernetes.
 
 ## Stack
@@ -43,3 +45,22 @@ tests/       tests unitaires
 k8s/         manifests Kubernetes
 scripts/     scripts de déploiement et diagnostic
 ```
+
+## Intégration continue
+
+Trois jobs enchaînés par `needs`, ordonnés par coût croissant : `lint` (ShellCheck) →
+`test` (build, tests, couverture) → `image` (build Docker, vérification non-root).
+
+Le rapport de couverture est publié en artefact à chaque exécution, y compris lorsque les
+tests échouent.
+
+Effet des caches, mesuré sur deux exécutions consécutives :
+
+| Étape | Cache froid | Cache chaud |
+|---|---|---|
+| `dotnet restore` | 9 s | 2 s |
+| Build de l'image | 56 s | 8 s |
+| **Pipeline complet** | **107 s** | **63 s** |
+
+Le cache NuGet est indexé sur un hash des `.csproj` : il n'est reconstruit que lorsqu'une
+dépendance change.
