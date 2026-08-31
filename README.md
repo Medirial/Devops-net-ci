@@ -101,19 +101,22 @@ seule.
 
 ### Durées
 
-Mesurées sur l'exécution de `develop` qui suit le merge, la seule où les six jobs tournent.
+Mesurées sur `develop`, la seule branche où les six jobs tournent. Le cache de couches
+Docker est cloisonné par branche : la première exécution après un merge ne réutilise pas
+celui rempli par les exécutions de la pull request.
 
-| Job | Durée |
-|---|---|
-| `lint` | 8 s |
-| `test` | 25 s |
-| `sonar` | 5 s, étapes ignorées faute de secret |
-| `image` | 45 s |
-| `scan` | 66 s |
-| `publish` | 17 s |
-| **Pipeline complet** | **172 s** |
+| Job | 1re exécution | Exécution suivante |
+|---|---|---|
+| `lint` | 8 s | 6 s |
+| `test` | 25 s | 32 s |
+| `sonar` | 5 s | 4 s |
+| `image` | 45 s | 23 s |
+| `scan` | 66 s | 32 s |
+| `publish` | 17 s | 32 s |
+| **Pipeline complet** | **172 s** | **134 s** |
 
-`sonar` tourne en parallèle de `image` : il n'allonge pas le pipeline.
+`sonar` tourne en parallèle de `image` : il n'allonge pas le pipeline. Ses étapes sont
+ignorées tant que `SONAR_TOKEN` n'est pas renseigné.
 
 Sur une pull request, `publish` n'est pas exécuté et le pipeline complet est mesuré à
 125 s.
