@@ -99,6 +99,25 @@ L'authentification utilise le `GITHUB_TOKEN` du run, sans secret à créer. La p
 `packages: write` est déclarée sur ce seul job ; les autres gardent un jeton en lecture
 seule.
 
+### Durées
+
+Mesurées sur l'exécution de `develop` qui suit le merge, la seule où les six jobs tournent.
+
+| Job | Durée |
+|---|---|
+| `lint` | 8 s |
+| `test` | 25 s |
+| `sonar` | 5 s, étapes ignorées faute de secret |
+| `image` | 45 s |
+| `scan` | 66 s |
+| `publish` | 17 s |
+| **Pipeline complet** | **172 s** |
+
+`sonar` tourne en parallèle de `image` : il n'allonge pas le pipeline.
+
+Sur une pull request, `publish` n'est pas exécuté et le pipeline complet est mesuré à
+125 s.
+
 ### Caches
 
 Effet des caches, mesuré sur deux exécutions consécutives :
@@ -109,5 +128,8 @@ Effet des caches, mesuré sur deux exécutions consécutives :
 | Build de l'image | 56 s | 8 s |
 
 Le cache NuGet est indexé sur un hash des `.csproj` : il n'est reconstruit que lorsqu'une
-dépendance change. Le job `scan` reconstruit l'image depuis le cache de couches rempli par
-le job `image`, faute de disque partagé entre deux jobs.
+dépendance change.
+
+Faute de disque partagé entre deux jobs, `scan` et `publish` reconstruisent l'image depuis
+le cache de couches rempli par `image`. La reconstruction coûte 14 s dans `scan` et 6 s
+dans `publish`, contre 45 s pour le build initial.
