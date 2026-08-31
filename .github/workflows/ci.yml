@@ -86,6 +86,98 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # Ce job ne s'enchaine pas apres image : il part de test, en parallele, parce qu'il
+  # refait son propre build. Le scanner .NET n'analyse pas des sources, il s'insere entre
+  # begin et end autour d'une compilation MSBuild pour recuperer le resultat des
+  # analyseurs Roslyn. Rejouer le build est donc inevitable, et non un oubli.
+  sonar:
+    name: Analyse SonarCloud
+    runs-on: ubuntu-latest
+    needs: test
+    # Le contexte secrets n'est pas utilisable dans un if de job -- GitHub refuse le
+    # workflow entier avec "Unrecognized named-value: 'secrets'". Il l'est en revanche
+    # dans env, d'ou ce passage par une variable et une condition sur chaque step.
+    # Tant que SONAR_TOKEN n'est pas pose dans les secrets du depot, le job reste vert
+    # avec toutes ses etapes sautees, et il s'active seul le jour ou le secret arrive.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Verifier la presence du secret
+        id: secret
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SONAR_TOKEN absent du depot, analyse SonarCloud sautee"
+          fi
+
+      # fetch-depth 0 : sans l'historique complet, Sonar ne peut pas dater les lignes et
+      # le mode "nouveau code" ne distingue plus ce que le commit a introduit.
+      - uses: actions/checkout@v4
+        if: steps.secret.outputs.present == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.secret.outputs.present == 'true'
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Le scanner est un programme Java, meme pour analyser du C#.
+      - uses: actions/setup-java@v6
+        if: steps.secret.outputs.present == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache NuGet
+        if: steps.secret.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Installer le scanner
+        if: steps.secret.outputs.present == 'true'
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Analyser et attendre le Quality Gate
+        if: steps.secret.outputs.present == 'true'
+        run: |
+          # Le scanner .NET ne lit pas sonar-project.properties : on traduit chaque cle
+          # du fichier en argument, plutot que de dupliquer les valeurs dans ce YAML.
+          args=()
+          while IFS='=' read -r cle valeur; do
+            case "$cle" in
+              ''|\#*) continue ;;
+              sonar.projectKey) args+=("/k:$valeur") ;;
+              sonar.organization) args+=("/o:$valeur") ;;
+              *) args+=("/d:$cle=$valeur") ;;
+            esac
+          done < sonar-project.properties
+
+          # qualitygate.wait : sans lui, end rend la main des l'envoi du rapport et le job
+          # est vert quoi que dise le gate. Un gate qui n'arrete pas la chaine ne sert a
+          # rien -- c'est le point de toute la phase.
+          dotnet sonarscanner begin "${args[@]}" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.qualitygate.wait=true
+
+          # Pas de --no-incremental ni de cache de build ici : le scanner a besoin de voir
+          # la compilation reelle, un build resservi depuis le cache ne produirait aucun
+          # diagnostic.
+          dotnet build --configuration Release
+
+          dotnet test --configuration Release --no-build \
+            --collect:"XPlat Code Coverage" \
+            --settings coverlet.runsettings \
+            --results-directory ./coverage
+
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
   image:
     name: Build de l'image
     runs-on: ubuntu-latest
