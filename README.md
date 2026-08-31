@@ -48,11 +48,58 @@ scripts/     scripts de déploiement et diagnostic
 
 ## Intégration continue
 
-Trois jobs enchaînés par `needs`, ordonnés par coût croissant : `lint` (ShellCheck) →
-`test` (build, tests, couverture) → `image` (build Docker, vérification non-root).
+Six jobs, enchaînés par `needs` et ordonnés par coût croissant.
 
-Le rapport de couverture est publié en artefact à chaque exécution, y compris lorsque les
-tests échouent.
+```
+lint ──> test ──┬──> sonar
+                └──> image ──> scan ──> publish
+```
+
+| Job | Rôle |
+|---|---|
+| `lint` | ShellCheck sur `scripts/` |
+| `test` | build, tests, rapport de couverture |
+| `sonar` | analyse SonarCloud, Quality Gate bloquant |
+| `image` | build Docker, vérification non-root, taille |
+| `scan` | scan Trivy de l'image |
+| `publish` | publication sur GHCR |
+
+Le rapport de couverture et le rapport Trivy sont publiés en artefact à chaque exécution,
+y compris lorsque l'étape échoue.
+
+### Analyse statique
+
+SonarCloud consomme le rapport OpenCover produit par le job `test`. Le Quality Gate est
+bloquant : `sonar.qualitygate.wait=true` fait attendre le verdict et sortir en erreur.
+
+Les paramètres d'analyse sont dans `sonar-project.properties`. Les exclusions de couverture
+sont alignées sur `coverlet.runsettings`.
+
+Le job est conditionné à la présence du secret `SONAR_TOKEN`. Tant que le secret n'est pas
+renseigné, le job reste vert avec ses étapes ignorées, et il s'active sans modification du
+workflow le jour où il l'est.
+
+### Scan de vulnérabilités
+
+Trivy échoue sur les CVE `CRITICAL` et `HIGH`. Les CVE sans correctif publié en amont sont
+écartées (`ignore-unfixed`) : elles ne sont pas corrigeables ici et laisseraient le job
+rouge en permanence.
+
+Le premier scan a échoué sur `CVE-2026-14456` (HIGH), qui touche `libssl3` et `libcrypto3`.
+Le correctif était publié par Alpine mais absent de l'image de base. Le `Dockerfile` met
+désormais à jour les paquets système au moment du build.
+
+### Publication de l'image
+
+L'image est poussée sur `ghcr.io/medirial/devops-net-ci`, uniquement depuis `develop` et
+`main`. Trois tags : SHA court, nom de branche, et `latest` sur `main` seulement. Le tag
+par SHA est immuable et désigne un commit unique, ce qui rend un retour arrière possible.
+
+L'authentification utilise le `GITHUB_TOKEN` du run, sans secret à créer. La permission
+`packages: write` est déclarée sur ce seul job ; les autres gardent un jeton en lecture
+seule.
+
+### Caches
 
 Effet des caches, mesuré sur deux exécutions consécutives :
 
@@ -60,7 +107,7 @@ Effet des caches, mesuré sur deux exécutions consécutives :
 |---|---|---|
 | `dotnet restore` | 9 s | 2 s |
 | Build de l'image | 56 s | 8 s |
-| **Pipeline complet** | **107 s** | **63 s** |
 
 Le cache NuGet est indexé sur un hash des `.csproj` : il n'est reconstruit que lorsqu'une
-dépendance change.
+dépendance change. Le job `scan` reconstruit l'image depuis le cache de couches rempli par
+le job `image`, faute de disque partagé entre deux jobs.

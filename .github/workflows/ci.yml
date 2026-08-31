@@ -86,6 +86,98 @@ jobs:
           path: coverage/
           retention-days: 7
 
+  # Ce job ne s'enchaine pas apres image : il part de test, en parallele, parce qu'il
+  # refait son propre build. Le scanner .NET n'analyse pas des sources, il s'insere entre
+  # begin et end autour d'une compilation MSBuild pour recuperer le resultat des
+  # analyseurs Roslyn. Rejouer le build est donc inevitable, et non un oubli.
+  sonar:
+    name: Analyse SonarCloud
+    runs-on: ubuntu-latest
+    needs: test
+    # Le contexte secrets n'est pas utilisable dans un if de job -- GitHub refuse le
+    # workflow entier avec "Unrecognized named-value: 'secrets'". Il l'est en revanche
+    # dans env, d'ou ce passage par une variable et une condition sur chaque step.
+    # Tant que SONAR_TOKEN n'est pas pose dans les secrets du depot, le job reste vert
+    # avec toutes ses etapes sautees, et il s'active seul le jour ou le secret arrive.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Verifier la presence du secret
+        id: secret
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SONAR_TOKEN absent du depot, analyse SonarCloud sautee"
+          fi
+
+      # fetch-depth 0 : sans l'historique complet, Sonar ne peut pas dater les lignes et
+      # le mode "nouveau code" ne distingue plus ce que le commit a introduit.
+      - uses: actions/checkout@v4
+        if: steps.secret.outputs.present == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.secret.outputs.present == 'true'
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Le scanner est un programme Java, meme pour analyser du C#.
+      - uses: actions/setup-java@v6
+        if: steps.secret.outputs.present == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache NuGet
+        if: steps.secret.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Installer le scanner
+        if: steps.secret.outputs.present == 'true'
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Analyser et attendre le Quality Gate
+        if: steps.secret.outputs.present == 'true'
+        run: |
+          # Le scanner .NET ne lit pas sonar-project.properties : on traduit chaque cle
+          # du fichier en argument, plutot que de dupliquer les valeurs dans ce YAML.
+          args=()
+          while IFS='=' read -r cle valeur; do
+            case "$cle" in
+              ''|\#*) continue ;;
+              sonar.projectKey) args+=("/k:$valeur") ;;
+              sonar.organization) args+=("/o:$valeur") ;;
+              *) args+=("/d:$cle=$valeur") ;;
+            esac
+          done < sonar-project.properties
+
+          # qualitygate.wait : sans lui, end rend la main des l'envoi du rapport et le job
+          # est vert quoi que dise le gate. Un gate qui n'arrete pas la chaine ne sert a
+          # rien -- c'est le point de toute la phase.
+          dotnet sonarscanner begin "${args[@]}" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.qualitygate.wait=true
+
+          # Pas de --no-incremental ni de cache de build ici : le scanner a besoin de voir
+          # la compilation reelle, un build resservi depuis le cache ne produirait aucun
+          # diagnostic.
+          dotnet build --configuration Release
+
+          dotnet test --configuration Release --no-build \
+            --collect:"XPlat Code Coverage" \
+            --settings coverlet.runsettings \
+            --results-directory ./coverage
+
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
   image:
     name: Build de l'image
     runs-on: ubuntu-latest
@@ -101,7 +193,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # Le push arrive en phase 5, avec le scan Trivy et le tag par SHA.
+          # Ce job ne pousse rien : il valide l'image. La publication se fait dans un job
+          # separe, apres le scan.
           push: false
           load: true
           tags: taskapi:${{ github.sha }}
@@ -119,3 +212,113 @@ jobs:
 
       - name: Mesurer la taille de l'image
         run: docker images taskapi:${{ github.sha }} --format '{{.Size}}'
+
+  scan:
+    name: Scan Trivy
+    runs-on: ubuntu-latest
+    needs: image
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Un job tourne sur une autre VM : l'image construite par le job precedent n'existe
+      # pas ici. On la reconstruit, mais toutes ses couches sont deja dans le cache GHA
+      # que le job image vient de remplir, donc c'est un cache hit et non un vrai build.
+      # L'alternative -- exporter un tar de 186 Mo en artefact puis le retelecharger --
+      # coute plus cher que ce cache hit.
+      - name: Reconstruire l'image depuis le cache de couches
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: taskapi:${{ github.sha }}
+          cache-from: type=gha
+
+      # ignore-unfixed : une CVE sans correctif publie en amont n'est pas corrigeable
+      # ici. Bloquer dessus laisserait la CI rouge en permanence sans action possible,
+      # et un job rouge en permanence finit par etre ignore.
+      # CRITICAL,HIGH : en dessous, le bruit de la distribution de base noie le signal.
+      # exit-code 1 : un scan qui n'arrete pas la chaine n'est qu'un rapport de plus.
+      - name: Scanner l'image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: taskapi:${{ github.sha }}
+          scan-type: image
+          format: table
+          output: trivy-report.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: '1'
+
+      # L'option output ecrit dans un fichier au lieu de la sortie standard : sans ce
+      # step, les logs du job ne montreraient rien.
+      - name: Afficher le rapport
+        if: always()
+        run: cat trivy-report.txt
+
+      # always() : c'est quand le scan echoue qu'on a le plus besoin du rapport.
+      - name: Publier le rapport Trivy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+          retention-days: 7
+
+  publish:
+    name: Publication sur GHCR
+    runs-on: ubuntu-latest
+    needs: scan
+    # Jamais sur une pull request : le code n'est pas encore relu, et une PR venant d'un
+    # fork recevrait un GITHUB_TOKEN en lecture seule. On ne publie que ce qui est entre
+    # dans develop ou main.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    # Declarer permissions ici remplace entierement le bloc du workflow pour ce job :
+    # contents: read doit donc etre repete. Le droit d'ecriture sur les packages ne vaut
+    # que pour ce job, les autres restent en lecture seule.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Pas de secret a creer : GITHUB_TOKEN est genere pour ce run, expire a sa fin et
+      # est limite a ce depot. Un PAT personnel n'aurait aucune de ces trois proprietes.
+      - name: Connexion a GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # sha court : un tag immuable qui designe un commit et un seul. C'est la condition
+      # pour qu'un rollback ait un sens -- "on tournait sur latest" ne dit rien.
+      # Le tag de branche sert a savoir ce qui tourne sur develop.
+      # latest n'est pose que sur la branche par defaut, jamais depuis develop.
+      - name: Calculer les tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/medirial/devops-net-ci
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Meme cache que les jobs precedents : les couches sont deja construites, ce step
+      # ne fait que pousser.
+      - name: Construire et pousser l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

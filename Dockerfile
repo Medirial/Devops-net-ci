@@ -15,10 +15,19 @@ RUN dotnet publish src/TaskApi.csproj -c Release -o /app/publish --no-restore
 # sources, ni le cache NuGet n'atteignent l'image finale.
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS final
 
+# apk upgrade avant l'installation : l'image de base est reconstruite par son editeur a
+# son propre rythme, et ses paquets systeme retardent sur les correctifs Alpine. Le scan
+# Trivy de la CI a remonte CVE-2026-14456 (HIGH) sur libssl3 et libcrypto3 en 3.5.7-r0
+# alors que 3.5.8-r0 etait publie. Mettre a jour au build ferme cette fenetre sans
+# attendre l'editeur.
+# Contrepartie assumee : le build n'est plus reproductible a l'octet pres, deux builds du
+# meme Dockerfile a deux dates donnent des versions de paquets differentes. C'est le prix
+# a payer pour ne pas livrer une CVE connue et corrigee en amont.
+#
 # curl n'est pas dans l'image aspnet. Installe uniquement pour le HEALTHCHECK : sans
 # client HTTP dans le conteneur, Docker ne peut pas interroger /health/ready.
 # --no-cache evite d'ecrire l'index des paquets dans la couche.
-RUN apk add --no-cache curl
+RUN apk upgrade --no-cache && apk add --no-cache curl
 
 WORKDIR /app
 COPY --from=build /app/publish .
