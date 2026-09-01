@@ -1,0 +1,27 @@
+# Ce qui est ici n'est pas secret : un nom de base, un nom d'utilisateur, un nom de service.
+# Le mot de passe, lui, est dans 20-secret.yaml.
+#
+# Pourquoi cette configuration sort de l'image : l'image doit etre identique en local, en
+# integration et en production. Si l'hote de la base est fige dans l'image, changer
+# d'environnement impose de reconstruire -- et l'image qui part en production n'est plus
+# celle qui a ete testee et scannee par la CI.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskapi-config
+  namespace: taskapi
+data:
+  # Nom du Service PostgreSQL. La resolution DNS interne du cluster le transforme en IP de
+  # Service, stable, alors que l'IP du pod change a chaque recreation. C'est le meme
+  # mecanisme que le nom de service "db" du docker-compose.
+  POSTGRES_HOST: postgres
+  POSTGRES_DB: taskapi
+  POSTGRES_USER: taskapi
+
+  # Production : l'endpoint OpenAPI n'est pas expose. Il decrit toute la surface de l'API,
+  # c'est une carte offerte a qui cherche une faille.
+  ASPNETCORE_ENVIRONMENT: Production
+
+  # Database__MigrationMode n'est volontairement pas ici : sa valeur n'est pas la meme pour
+  # le Job (only) et pour les replicas (none). La mettre en commun forcerait l'un des deux
+  # a la surcharger, donc a la declarer deux fois de toute facon.
