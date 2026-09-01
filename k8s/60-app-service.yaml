@@ -1,0 +1,41 @@
+# Le Service repond a un probleme concret : l'IP d'un pod est ephemere. Un pod recree apres
+# un rolling update, un OOMKilled ou une eviction n'a pas la meme adresse. Le Service donne
+# une IP et un nom DNS stables, et repartit le trafic sur les pods qui passent leur sonde
+# readiness -- ceux-la seuls sont dans ses endpoints.
+#
+# C'est la difference entre un Deployment et un Service : le Deployment maintient un nombre
+# de pods conformes a un etat desire, le Service donne une adresse a ce groupe de pods. Le
+# Pod, lui, est l'unite jetable : on ne le cree jamais a la main ici.
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskapi
+  namespace: taskapi
+  labels:
+    app.kubernetes.io/name: taskapi
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: taskapi
+spec:
+  # ClusterIP : adresse interne au cluster. L'acces depuis le poste passe par
+  #
+  #   kubectl -n taskapi port-forward service/taskapi 8080:80
+  #
+  # Pourquoi pas NodePort : il ouvre un port sur le noeud, donc expose l'API a tout ce qui
+  # atteint ce noeud, et impose une plage de ports arbitraire (30000-32767). Pour un acces
+  # de developpement, port-forward ne laisse rien d'ouvert quand il est arrete.
+  # Pourquoi pas Ingress : hors perimetre, cela ajoute un controleur a installer et a
+  # comprendre pour un seul service.
+  type: ClusterIP
+  selector:
+    # Le Service ne connait pas le Deployment : il selectionne des pods par leurs labels.
+    # Un label mal recopie ici donne un Service sans endpoints, qui repond "connection
+    # refused" alors que les pods tournent -- la panne k8s la plus courante.
+    app.kubernetes.io/name: taskapi
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      # Port du Service, port du conteneur. targetPort designe le port nomme "http" du
+      # conteneur plutot que 8080 en dur : si le port du conteneur change un jour, le
+      # Service suit sans modification.
+      port: 80
+      targetPort: http
