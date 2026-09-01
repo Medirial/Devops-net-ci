@@ -1,0 +1,130 @@
+# PostgreSQL 16, la meme version qu'en local sous Compose.
+#
+# CHOIX ASSUME : les donnees vivent dans un emptyDir, elles disparaissent quand le pod est
+# supprime ou replanifie. Ce n'est pas un oubli. Un PersistentVolumeClaim sur Minikube
+# ajoute une StorageClass, un provisionneur, et un PVC qui reste en Pending sans message
+# utile -- du temps de debogage sans rapport avec ce qui est appris ici.
+#
+# Ce qu'il faudrait en production, et qu'il faut savoir dire :
+#   - un StatefulSet plutot qu'un Deployment, pour une identite et un volume stables ;
+#   - un PersistentVolumeClaim sur une StorageClass fournie par l'infrastructure ;
+#   - et surtout une base geree (RDS, Cloud SQL, Azure Database), parce que sauvegardes,
+#     restauration testee, bascule et montees de version ne s'improvisent pas dans un pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: taskapi
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: taskapi
+spec:
+  # Un seul replica, et ce n'est pas negociable ici : deux instances PostgreSQL ecrivant
+  # dans deux emptyDir distincts seraient deux bases differentes derriere un meme Service.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  strategy:
+    # Recreate et non RollingUpdate : avec RollingUpdate, l'ancien et le nouveau pod
+    # coexistent quelques secondes, ce qui n'a pas de sens pour une base a un seul writer.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: taskapi
+    spec:
+      securityContext:
+        # L'image officielle demarre en root pour corriger les droits du repertoire de
+        # donnees, puis redescend sur l'utilisateur postgres. On lui coupe ce detour :
+        # uid 70 est l'utilisateur postgres de la variante Alpine (verifie avec
+        # docker run --rm postgres:16-alpine id postgres).
+        runAsUser: 70
+        runAsGroup: 70
+        # fsGroup fait appartenir le volume au groupe 70 : sans lui, l'emptyDir est a
+        # root:root et initdb ne peut rien y ecrire.
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: taskapi-secret
+                  key: POSTGRES_PASSWORD
+            # initdb exige un repertoire de donnees en 0700 ou 0750. Le point de montage
+            # d'un volume est cree en 0775 par kubelet, donc inutilisable tel quel. En
+            # pointant PGDATA sur un sous-repertoire, c'est initdb qui le cree lui-meme,
+            # avec les droits qu'il attend.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            # pg_isready et non un test de port : postgres accepte les connexions plusieurs
+            # secondes avant d'etre pret a repondre a une requete. Meme sonde qu'en Compose.
+            exec:
+              command: ["pg_isready", "-U", "taskapi", "-d", "taskapi"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # Volontairement plus tolerante que la readiness : une base qui met du temps a
+            # repondre doit sortir du Service, pas etre tuee. failureThreshold 6 sur une
+            # periode de 10 s laisse une minute avant redemarrage.
+            exec:
+              command: ["pg_isready", "-U", "taskapi", "-d", "taskapi"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: taskapi
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: taskapi
+spec:
+  # ClusterIP : la base n'est joignable que depuis le cluster. L'exposer a l'exterieur
+  # serait ouvrir un port 5432 sur le noeud sans aucune raison.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

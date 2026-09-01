@@ -1,0 +1,14 @@
+# Les fichiers sont numerotes parce que kubectl apply -f k8s/ traite un repertoire dans
+# l'ordre alphabetique des noms de fichiers. Sans prefixe, "app-deployment.yaml" passerait
+# avant "namespace.yaml" et echouerait avec "namespaces \"taskapi\" not found".
+# L'ordre encode ici est celui des dependances : namespace, configuration, base, migration,
+# application.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: taskapi
+  labels:
+    # Le namespace isole les objets de ce projet de ceux des autres. Il donne aussi une
+    # commande de nettoyage sure : kubectl delete namespace taskapi supprime tout ce qui a
+    # ete cree ici, sans risque de toucher a kube-system.
+    app.kubernetes.io/part-of: taskapi
