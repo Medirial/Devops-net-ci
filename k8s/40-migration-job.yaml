@@ -1,0 +1,106 @@
+# Le probleme que ce Job resout : jusqu'ici l'API appliquait ses migrations au demarrage.
+# Avec deux replicas, les deux pods les appliqueraient en meme temps, sur la meme base, au
+# premier deploiement. C'est le seul endroit du projet ou le passage a deux replicas change
+# la conception de l'application, pas seulement son deploiement.
+#
+# Trois options, une retenue :
+#   - Job dedie (ici) : la migration a un lieu unique, un statut visible, des logs propres,
+#     et elle ne se rejoue pas a chaque redemarrage de pod. C'est aussi la seule des trois
+#     qui permettra un jour de migrer sans redeployer, ou de deployer sans migrer.
+#   - initContainer : ecarte. Il y en aurait un par pod, donc deux migrations concurrentes
+#     au premier deploiement -- le probleme reste entier -- et une tentative de plus a
+#     chaque rolling update.
+#   - rester a un replica : ecarte. C'est renoncer a l'objet meme de la phase.
+#
+# L'ordonnancement Job/Deployment n'est pas gere par un attente explicite : c'est la sonde
+# readiness de l'API qui exige un schema a jour. Un replica demarre avant la fin du Job
+# reste hors des endpoints du Service jusqu'a ce que la migration soit passee. Aucun des
+# deux objets n'attend l'autre, et l'ordre d'application n'a pas d'importance.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: taskapi-migrate
+  namespace: taskapi
+  labels:
+    app.kubernetes.io/name: taskapi
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/part-of: taskapi
+spec:
+  # Un Job est quasi immuable : re-appliquer le meme nom avec une image differente est
+  # refuse par l'API. C'est pourquoi make k8s-deploy le supprime avant d'appliquer.
+  # ttlSecondsAfterFinished le fait disparaitre 5 minutes apres sa reussite, ce qui laisse
+  # le temps de lire ses logs sans laisser trainer des pods termines.
+  ttlSecondsAfterFinished: 300
+
+  # Six tentatives : au premier deploiement, PostgreSQL n'accepte pas encore de connexion
+  # et le Job echoue legitimement une ou deux fois. Le delai entre tentatives double a
+  # chaque echec (10 s, 20 s, 40 s...), ce qui laisse le temps a la base de demarrer sans
+  # boucler indefiniment si elle ne demarre jamais.
+  backoffLimit: 6
+
+  # Borne dure : au dela, le Job est marque en echec meme s'il lui restait des tentatives.
+  # Sans elle, une base definitivement injoignable laisserait un deploiement "en cours".
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: taskapi
+        app.kubernetes.io/component: migration
+    spec:
+      # Never et non OnFailure : chaque tentative cree un nouveau pod, donc chaque echec
+      # laisse ses logs consultables. Avec OnFailure, le conteneur redemarre dans le meme
+      # pod et ecrase la sortie de la tentative precedente.
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        # runAsUser est obligatoire ici, ce n'est pas une redondance avec runAsNonRoot :
+        # le Dockerfile declare USER app, un nom. kubelet ne sait pas resoudre un nom en
+        # uid avant de demarrer le conteneur, donc avec runAsNonRoot seul il refuse de
+        # lancer le pod ("container has runAsNonRoot and image has non-numeric user").
+        # 1654 est l'uid de l'utilisateur app des images .NET.
+        runAsUser: 1654
+      containers:
+        - name: migrate
+          image: ghcr.io/medirial/devops-net-ci:sha-b786bf4
+          # Meme image que l'API, au tag pres : les migrations sont compilees dans
+          # l'assembly. Un tag different entre le Job et l'API ferait appliquer un schema
+          # que le code deploye ne connait pas.
+          env:
+            # only : migre puis sort en code 0. Sans ce mode, le binaire ouvrirait un port
+            # HTTP et le Job ne passerait jamais en Completed.
+            - name: Database__MigrationMode
+              value: only
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: taskapi-secret
+                  key: POSTGRES_PASSWORD
+            # $(VAR) est substitue par kubelet a partir des variables declarees plus haut
+            # dans cette meme liste. Cela evite d'ecrire le mot de passe ailleurs que dans
+            # le Secret : la chaine complete n'existe qu'en memoire du conteneur.
+            - name: ConnectionStrings__Postgres
+              value: Host=$(POSTGRES_HOST);Port=5432;Database=$(POSTGRES_DB);Username=$(POSTGRES_USER);Password=$(POSTGRES_PASSWORD)
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
