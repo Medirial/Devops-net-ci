@@ -12,7 +12,11 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.11" />
+    <!-- Dependance directe : GetPendingMigrationsAsync et Database.Migrate viennent de
+         Relational, pas de EF Core Core. Npgsql 9.0.4 la ramene en 9.0.1 ; le projet de
+         test la voit en 9.0.11 via InMemory, et MSBuild remonte alors un MSB3277. La
+         declarer ici aligne les deux projets sur la meme version. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.11" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
 
