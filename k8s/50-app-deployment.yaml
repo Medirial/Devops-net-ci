@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskapi
+  namespace: taskapi
+  labels:
+    app.kubernetes.io/name: taskapi
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: taskapi
+spec:
+  # Deux replicas : c'est ce qui rend le rolling update sans coupure possible, et c'est ce
+  # qui a impose de sortir les migrations du demarrage.
+  replicas: 2
+  selector:
+    # Ce selecteur est immuable apres creation. Le changer impose de supprimer le
+    # Deployment : d'ou un label stable, qui ne contient ni version ni tag d'image.
+    matchLabels:
+      app.kubernetes.io/name: taskapi
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable 0 : on ne descend jamais sous 2 pods prets. Le nouveau pod doit
+      # passer sa readiness avant qu'un ancien soit arrete.
+      # maxSurge 1 : au plus 3 pods pendant la bascule, donc un pod de ressources en plus,
+      # pas un doublement du deploiement.
+      # L'autre reglage possible, maxUnavailable 1 / maxSurge 0, ne consomme rien de plus
+      # mais accepte de tourner a capacite reduite pendant la bascule. Ici la capacite est
+      # jugee plus importante que les 256 Mio temporaires.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: taskapi
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: taskapi
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # Obligatoire avec runAsNonRoot : le Dockerfile declare USER app, un nom que
+        # kubelet ne sait pas resoudre avant de demarrer le conteneur. Sans uid numerique,
+        # le pod est refuse avec "image has non-numeric user (app), cannot verify user is
+        # non-root". 1654 est l'uid de l'utilisateur app des images .NET.
+        runAsUser: 1654
+      containers:
+        - name: api
+          # Tag par SHA, produit par la CI apres le scan Trivy. Immuable : il designe un
+          # commit et un seul, ce qui rend "revenir a la version d'avant" possible. Un tag
+          # latest designerait une image differente selon le jour.
+          image: ghcr.io/medirial/devops-net-ci:sha-b786bf4
+          ports:
+            - name: http
+              # 8080 : depuis .NET 8, lier un port inferieur a 1024 demanderait une
+              # capability que ce conteneur non-root n'a pas.
+              containerPort: 8080
+          env:
+            # none : les replicas ne migrent pas. C'est le Job taskapi-migrate qui applique
+            # le schema, une seule fois, avant qu'un replica ne devienne pret.
+            - name: Database__MigrationMode
+              value: none
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: POSTGRES_USER
+            - name: ASPNETCORE_ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: taskapi-config
+                  key: ASPNETCORE_ENVIRONMENT
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: taskapi-secret
+                  key: POSTGRES_PASSWORD
+            # kubelet substitue $(VAR) a partir des variables declarees plus haut dans
+            # cette liste. Le mot de passe n'est donc ecrit nulle part ailleurs que dans le
+            # Secret : ni dans le ConfigMap, ni dans l'image.
+            - name: ConnectionStrings__Postgres
+              value: Host=$(POSTGRES_HOST);Port=5432;Database=$(POSTGRES_DB);Username=$(POSTGRES_USER);Password=$(POSTGRES_PASSWORD)
+          resources:
+            # requests : ce que l'ordonnanceur reserve. C'est sur cette valeur, et pas sur
+            # la consommation reelle, qu'il decide si le pod tient sur un noeud.
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            # limits : le plafond. Depasser la limite memoire fait tuer le conteneur en
+            # OOMKilled -- un incident borne a ce pod. Sans limite, le pod consomme jusqu'a
+            # saturer le noeud, et l'OOM killer du noyau tue alors un processus quelconque,
+            # pas forcement le fautif : des pods sains peuvent mourir a sa place.
+            # Le depassement CPU, lui, ne tue rien : il est throttle.
+            # Mesure (kubectl top) : 42 Mio au repos, pics a 250 mCPU au demarrage. Les
+            # requests sont calees juste au-dessus du repos, la limite memoire laisse de
+            # la marge pour le tas gere par le GC.
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          livenessProbe:
+            # /health/live ne teste que le process, jamais la base. Une base tombee ne doit
+            # pas faire redemarrer l'application : redemarrer ne repare pas une base, et
+            # les deux replicas partiraient en boucle de redemarrage pendant l'incident.
+            httpGet:
+              path: /health/live
+              port: http
+            # 15 s, cale sur le demarrage observe : un pod passe de cree a READY en 11 a
+            # 13 s, dont 5 s d'initialDelaySeconds de la readiness -- l'application repond
+            # donc entre 5 et 10 s apres le demarrage du conteneur. Trop court, kubelet tue
+            # le conteneur avant qu'il ait fini de demarrer et le pod boucle en
+            # CrashLoopBackOff sans jamais reussir a demarrer.
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            # 3 echecs consecutifs, soit 30 s d'indisponibilite avant redemarrage. Une
+            # valeur de 1 ferait redemarrer le pod sur un unique hoquet reseau.
+            failureThreshold: 3
+          readinessProbe:
+            # /health/ready verifie la base ET que le schema attendu par ce binaire y est
+            # applique. C'est ce second point qui rend l'ordre Job/Deployment sans
+            # importance : un replica demarre avant la fin de la migration reste hors des
+            # endpoints du Service.
+            httpGet:
+              path: /health/ready
+              port: http
+            # Plus court que la liveness : plus tot un pod est declare pret, plus tot il
+            # sert du trafic. Un echec ici ne coute qu'un retrait du Service, pas un
+            # redemarrage -- l'erreur est bien moins chere que du cote liveness.
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            # Empeche le processus d'acquerir plus de privileges que son parent via un
+            # binaire setuid. Sans ce drapeau, un binaire setuid root present dans l'image
+            # redonnerait root a qui obtient l'execution de code dans le conteneur.
+            allowPrivilegeEscalation: false
